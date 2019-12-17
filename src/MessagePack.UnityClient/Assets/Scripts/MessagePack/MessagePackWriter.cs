@@ -624,6 +624,7 @@ namespace MessagePack
         /// Writes a <see cref="DateTime"/> using the message code <see cref="ReservedMessagePackExtensionTypeCode.DateTime"/>.
         /// </summary>
         /// <param name="dateTime">The value to write.</param>
+        /// <exception cref="NotSupportedException">Thrown when <see cref="OldSpec"/> is true because the old spec does not define a <see cref="DateTime"/> format.</exception>
         public void Write(DateTime dateTime)
         {
             if (this.OldSpec)
@@ -1069,6 +1070,28 @@ namespace MessagePack
         }
 
         /// <summary>
+        /// Gets memory where raw messagepack data can be written.
+        /// </summary>
+        /// <param name="length">The size of the memory block required.</param>
+        /// <returns>The span of memory to write to. This *may* exceed <paramref name="length"/>.</returns>
+        /// <remarks>
+        /// <para>After initializing the resulting memory, always follow up with a call to <see cref="Advance(int)"/>.</para>
+        /// <para>
+        /// This is similar in purpose to <see cref="WriteRaw(ReadOnlySpan{byte})"/>
+        /// but provides uninitialized memory for the caller to write to instead of copying initialized memory from elsewhere.
+        /// </para>
+        /// </remarks>
+        /// <seealso cref="IBufferWriter{T}.GetSpan(int)"/>
+        public Span<byte> GetSpan(int length) => this.writer.GetSpan(length);
+
+        /// <summary>
+        /// Commits memory previously returned from <see cref="GetSpan(int)"/> as initialized.
+        /// </summary>
+        /// <param name="length">The number of bytes initialized with messagepack data from the previously returned span.</param>
+        /// <seealso cref="IBufferWriter{T}.Advance(int)"/>
+        public void Advance(int length) => this.writer.Advance(length);
+
+        /// <summary>
         /// Writes a 16-bit integer in big endian format.
         /// </summary>
         /// <param name="value">The integer.</param>
@@ -1100,10 +1123,6 @@ namespace MessagePack
             WriteBigEndian(value, span);
             this.writer.Advance(8);
         }
-
-        internal Span<byte> GetSpan(int length) => this.writer.GetSpan(length);
-
-        internal void Advance(int length) => this.writer.Advance(length);
 
         internal byte[] FlushAndGetArray()
         {

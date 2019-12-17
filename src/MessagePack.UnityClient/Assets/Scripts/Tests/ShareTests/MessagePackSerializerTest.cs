@@ -8,6 +8,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using MessagePack.Resolvers;
+using Microsoft;
 using Nerdbank.Streams;
 using SharedData;
 using Xunit;
@@ -43,6 +44,34 @@ namespace MessagePack.Tests
             writer.Flush();
             var reader = new MessagePackReader(writerBytes.AsReadOnlySequence);
             var data5 = MessagePackSerializer.Deserialize(t, ref reader, StandardResolver.Options) as FirstSimpleData;
+
+            new[] { data1.Prop1, data2.Prop1, data3.Prop1, data4.Prop1, data5.Prop1 }.Distinct().Is(data.Prop1);
+            new[] { data1.Prop2, data2.Prop2, data3.Prop2, data4.Prop2, data5.Prop2 }.Distinct().Is(data.Prop2);
+            new[] { data1.Prop3, data2.Prop3, data3.Prop3, data4.Prop3, data5.Prop3 }.Distinct().Is(data.Prop3);
+        }
+
+        [Fact]
+        public void NonGeneric_BufferWriter_ReadOnlySequence()
+        {
+            var data = new FirstSimpleData { Prop1 = 9, Prop2 = "hoge", Prop3 = 999 };
+            Type t = typeof(FirstSimpleData);
+            var ms = new MemoryStream();
+            var writerBytes = new Sequence<byte>();
+
+            var data1 = MessagePackSerializer.Deserialize(t, MessagePackSerializer.Serialize(t, data)) as FirstSimpleData;
+            var data2 = MessagePackSerializer.Deserialize(t, MessagePackSerializer.Serialize(t, data, StandardResolver.Options)) as FirstSimpleData;
+
+            MessagePackSerializer.Serialize(t, ms, data);
+            ms.Position = 0;
+            var data3 = MessagePackSerializer.Deserialize(t, ms) as FirstSimpleData;
+
+            ms = new MemoryStream();
+            MessagePackSerializer.Serialize(t, ms, data, StandardResolver.Options);
+            ms.Position = 0;
+            var data4 = MessagePackSerializer.Deserialize(t, ms, StandardResolver.Options) as FirstSimpleData;
+
+            MessagePackSerializer.Serialize(t, writerBytes, data, StandardResolver.Options);
+            var data5 = MessagePackSerializer.Deserialize(t, writerBytes.AsReadOnlySequence, StandardResolver.Options) as FirstSimpleData;
 
             new[] { data1.Prop1, data2.Prop1, data3.Prop1, data4.Prop1, data5.Prop1 }.Distinct().Is(data.Prop1);
             new[] { data1.Prop2, data2.Prop2, data3.Prop2, data4.Prop2, data5.Prop2 }.Distinct().Is(data.Prop2);
@@ -89,7 +118,7 @@ namespace MessagePack.Tests
             var decompress2 = MessagePackSerializer.Deserialize<FirstSimpleData[]>(normal);
             var decompress3 = MessagePackSerializer.Deserialize<FirstSimpleData[]>(ms);
             ms.Position = 0;
-            var onmore = new NonMemoryStream(ms);
+            var onmore = new StreamWrapper(ms);
             var decompress4 = MessagePackSerializer.Deserialize<FirstSimpleData[]>(onmore);
 
             decompress1.IsStructuralEqual(originalData);
@@ -97,26 +126,123 @@ namespace MessagePack.Tests
             decompress3.IsStructuralEqual(originalData);
             decompress4.IsStructuralEqual(originalData);
         }
+
+        [Fact]
+        public void SerializeAndDeserialize_MultipleValues_NonSeekableStream()
+        {
+            var ms = new MemoryStream();
+            Stream stream = new StreamWrapper(ms, canSeek: false);
+
+            MessagePackSerializer.Serialize(stream, 1);
+            MessagePackSerializer.Serialize(stream, 2);
+
+            ms.Position = 0;
+            Assert.Equal(1, MessagePackSerializer.Deserialize<int>(stream));
+            var ex = Assert.Throws<MessagePackSerializationException>(() => MessagePackSerializer.Deserialize<int>(stream));
+            Assert.IsType<EndOfStreamException>(ex.InnerException);
+        }
+
+        [Fact]
+        public async Task SerializeAndDeserializeAsync_MultipleValues_NonSeekableStream()
+        {
+            var ms = new MemoryStream();
+            Stream stream = new StreamWrapper(ms, canSeek: false);
+
+            await MessagePackSerializer.SerializeAsync(stream, 1);
+            await MessagePackSerializer.SerializeAsync(stream, 2);
+
+            ms.Position = 0;
+            Assert.Equal(1, await MessagePackSerializer.DeserializeAsync<int>(stream));
+            var ex = await Assert.ThrowsAsync<MessagePackSerializationException>(async () => await MessagePackSerializer.DeserializeAsync<int>(stream));
+            Assert.IsType<EndOfStreamException>(ex.InnerException);
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void SerializeAndDeserialize_MultipleValues_SeekableStream(bool useMemoryStream)
+        {
+            Stream stream = new MemoryStream();
+            if (!useMemoryStream)
+            {
+                // Hide the MemoryStream so MessagePack doesn't treat it specially.
+                stream = new StreamWrapper(stream);
+            }
+
+            MessagePackSerializer.Serialize(stream, 1);
+            MessagePackSerializer.Serialize(stream, 2);
+            MessagePackSerializer.Serialize(stream, 3);
+
+            stream.Position = 0;
+            Assert.Equal(1, MessagePackSerializer.Deserialize<int>(stream));
+            Assert.Equal(2, MessagePackSerializer.Deserialize<int>(stream));
+            Assert.Equal(3, MessagePackSerializer.Deserialize<int>(stream));
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task SerializeAndDeserializeAsync_MultipleValues_SeekableStream(bool useMemoryStream)
+        {
+            Stream stream = new MemoryStream();
+            if (!useMemoryStream)
+            {
+                // Hide the MemoryStream so MessagePack doesn't treat it specially.
+                stream = new StreamWrapper(stream);
+            }
+
+            await MessagePackSerializer.SerializeAsync(stream, 1);
+            await MessagePackSerializer.SerializeAsync(stream, 2);
+            await MessagePackSerializer.SerializeAsync(stream, 3);
+
+            stream.Position = 0;
+            Assert.Equal(1, await MessagePackSerializer.DeserializeAsync<int>(stream));
+            Assert.Equal(2, await MessagePackSerializer.DeserializeAsync<int>(stream));
+            Assert.Equal(3, await MessagePackSerializer.DeserializeAsync<int>(stream));
+        }
     }
 
-    internal class NonMemoryStream : Stream
+    internal class StreamWrapper : Stream
     {
-        private readonly MemoryStream stream;
+        private readonly Stream stream;
+        private readonly bool canSeek;
 
-        public NonMemoryStream(MemoryStream stream)
+        internal StreamWrapper(Stream stream)
         {
+            Requires.NotNull(stream, nameof(stream));
             this.stream = stream;
+            this.canSeek = stream.CanSeek;
+        }
+
+        internal StreamWrapper(Stream stream, bool canSeek)
+        {
+            Requires.NotNull(stream, nameof(stream));
+            Requires.Argument(stream.CanSeek || !CanSeek, nameof(canSeek), "Cannot emulate seek on a non-seekable underlying stream.");
+            this.stream = stream;
+            this.canSeek = canSeek;
         }
 
         public override bool CanRead => this.stream.CanRead;
 
-        public override bool CanSeek => this.stream.CanSeek;
+        public override bool CanSeek => this.canSeek;
 
         public override bool CanWrite => this.stream.CanWrite;
 
         public override long Length => this.stream.Length;
 
-        public override long Position { get => this.stream.Position; set => this.stream.Position = value; }
+        public override long Position
+        {
+            get => this.stream.Position;
+            set
+            {
+                if (!this.canSeek)
+                {
+                    throw new NotSupportedException();
+                }
+
+                this.stream.Position = value;
+            }
+        }
 
         public override void Flush()
         {
@@ -130,6 +256,11 @@ namespace MessagePack.Tests
 
         public override long Seek(long offset, SeekOrigin origin)
         {
+            if (!this.canSeek)
+            {
+                throw new NotSupportedException();
+            }
+
             return this.stream.Seek(offset, origin);
         }
 

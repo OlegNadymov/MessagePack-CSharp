@@ -3,9 +3,6 @@
 
 using System;
 using System.Buffers;
-using MessagePack.Formatters;
-using Microsoft;
-using Nerdbank.Streams;
 
 namespace MessagePack
 {
@@ -18,13 +15,24 @@ namespace MessagePack
 
         internal static byte[] GetWriterBytes<TArg>(TArg arg, GetWriterBytesAction<TArg> action)
         {
-            using (var sequence = new Sequence<byte>())
+            using (var sequenceRental = SequencePool.Shared.Rent())
             {
-                var writer = new MessagePackWriter(sequence);
+                var writer = new MessagePackWriter(sequenceRental.Value);
                 action(ref writer, arg);
                 writer.Flush();
-                return sequence.AsReadOnlySequence.ToArray();
+                return sequenceRental.Value.AsReadOnlySequence.ToArray();
             }
+        }
+
+        internal static Memory<T> GetMemoryCheckResult<T>(this IBufferWriter<T> bufferWriter, int size = 0)
+        {
+            var memory = bufferWriter.GetMemory(size);
+            if (memory.IsEmpty)
+            {
+                throw new InvalidOperationException("The underlying IBufferWriter<byte>.GetMemory(int) method returned an empty memory block, which is not allowed. This is a bug in " + bufferWriter.GetType().FullName);
+            }
+
+            return memory;
         }
     }
 }

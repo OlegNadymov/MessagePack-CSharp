@@ -33,11 +33,11 @@ namespace MessagePackCompiler
            string resolverName,
            string @namespace,
            bool useMapMode,
-           string multipleIfDiretiveOutputSymbols)
+           string multipleIfDirectiveOutputSymbols)
         {
             var namespaceDot = string.IsNullOrWhiteSpace(@namespace) ? string.Empty : @namespace + ".";
             var conditionalSymbols = conditionalSymbol?.Split(',') ?? Array.Empty<string>();
-            var multipleOutputSymbols = multipleIfDiretiveOutputSymbols?.Split(',') ?? Array.Empty<string>();
+            var multipleOutputSymbols = multipleIfDirectiveOutputSymbols?.Split(',') ?? Array.Empty<string>();
 
             var sw = Stopwatch.StartNew();
 
@@ -182,6 +182,11 @@ namespace MessagePackCompiler
                     };
 
                     await OutputToDirAsync(output, resolverTemplate.Namespace, resolverTemplate.ResolverName, multioutSymbol, resolverTemplate.TransformText(), cancellationToken).ConfigureAwait(false);
+                }
+
+                if (objectInfo.Length == 0 && enumInfo.Length == 0 && genericInfo.Length == 0 & unionInfo.Length == 0)
+                {
+                    logger("Generated result is empty, unexpected result?");
                 }
             }
 
