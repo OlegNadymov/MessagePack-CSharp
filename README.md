@@ -25,7 +25,7 @@ We target .NET Standard 2.0 with special optimizations for .NET Core 2.1+.
 Install-Package MessagePack
 ```
 
-Install the optional C# analyzer to get warnings for coding mistakes and code fixes to save you time:
+Install the optional C# [analyzers](doc/analyzers/index.md) to get warnings for coding mistakes and code fixes to save you time:
 
 ```ps1
 Install-Package MessagePackAnalyzer
@@ -182,7 +182,7 @@ All patterns serialization target are public instance member(field or property).
 
 Which should uses int key or string key? I recommend use int key because faster and compact than string key. But string key has key name information, it is useful for debugging.
 
-MessagePackSerializer requests target must put attribute is for robustness. If class is grown, you need to be conscious of versioning. MessagePackSerializer uses default value if key does not exists. If uses int key, should be start from 0 and should be sequential. If unnecessary properties come out, please make a missing number. Reuse is bad. Also, if Int Key's jump number is too large, it affects binary size.
+MessagePackSerializer requests target must put attribute is for robustness. If class is grown, you need to be conscious of versioning. MessagePackSerializer uses default value if key does not exists. If uses int key, should be start from 0 and should be sequential, if unnecessary properties come out, please make a obsolete and keep type, until all clients will update. Also, if Int Key's jump number is too large, it affects binary size.
 
 ```csharp
 [MessagePackObject]
@@ -208,13 +208,13 @@ public class ContractlessSample
 }
 
 var data = new ContractlessSample { MyProperty1 = 99, MyProperty2 = 9999 };
-var bin = MessagePackSerializer.Serialize(data, MessagePack.Resolvers.ContractlessStandardResolver.Instance);
+var bin = MessagePackSerializer.Serialize(data, MessagePack.Resolvers.ContractlessStandardResolver.Options);
 
 // {"MyProperty1":99,"MyProperty2":9999}
 Console.WriteLine(MessagePackSerializer.SerializeToJson(bin));
 
 // You can set ContractlessStandardResolver as default.
-MessagePackSerializer.SetDefaultResolver(MessagePack.Resolvers.ContractlessStandardResolver.Instance);
+MessagePackSerializer.DefaultOptions = MessagePack.Resolvers.ContractlessStandardResolver.Options;
 
 // serializable.
 var bin2 = MessagePackSerializer.Serialize(data);
@@ -244,7 +244,7 @@ var data = new PrivateSample();
 data.SetX(9999);
 
 // You can choose StandardResolverAllowPrivate or  ContractlessStandardResolverAllowPrivate
-var bin = MessagePackSerializer.Serialize(data, MessagePack.Resolvers.DynamicObjectResolverAllowPrivate.Instance);
+var bin = MessagePackSerializer.Serialize(data, MessagePack.Resolvers.DynamicObjectResolverAllowPrivate.Options);
 ```
 
 I don't need type, I want to use like BinaryFormatter! You can use as typeless resolver and helpers. Please see [Typeless section](https://github.com/neuecc/MessagePack-CSharp#typeless).
@@ -436,7 +436,7 @@ If use `MessagePackSerializer.Deserialize<object>` or `MessagePackSerializer.Des
 ```csharp
 // sample binary.
 var model = new DynamicModel { Name = "foobar", Items = new[] { 1, 10, 100, 1000 } };
-var bin = MessagePackSerializer.Serialize(model, ContractlessStandardResolver.Instance);
+var bin = MessagePackSerializer.Serialize(model, ContractlessStandardResolver.Options);
 
 // dynamic, untyped
 var dynamicModel = MessagePackSerializer.Deserialize<dynamic>(bin, ContractlessStandardResolver.Instance);
@@ -460,7 +460,7 @@ Console.WriteLine(MessagePackSerializer.SerializeToJson(bin));
 
 // Support Anonymous Type Serialize
 var anonType = new { Foo = 100, Bar = "foobar" };
-var bin2 = MessagePackSerializer.Serialize(anonType, MessagePack.Resolvers.ContractlessStandardResolver.Instance);
+var bin2 = MessagePackSerializer.Serialize(anonType, MessagePack.Resolvers.ContractlessStandardResolver.Options);
 
 // {"Foo":100,"Bar":"foobar"}
 Console.WriteLine(MessagePackSerializer.SerializeToJson(bin2));
@@ -526,6 +526,27 @@ MessagePack.Formatters.TypelessFormatter.BindToType = typeName =>
     return Type.GetType(typeName, false);
 };
 ```
+
+## <a name="security"></a>Security
+
+Deserializing data from an untrusted source can introduce security vulnerabilities to your application.
+Depending on the settings used during deserialization, untrusted data may be able to execute arbitrary code or a denial of service attack.
+Untrusted data might come from over the Internet over an unauthenticated connection, from the local disk if it may have been tampered with, or many other sources.
+
+When deserializing untrusted data, put MessagePack into a more secure mode by configuring your `MessagePackSerializerOptions.Security` property:
+
+```cs
+var options = MessagePackSerializerOptions.Standard
+    .WithSecurity(MessagePackSecurity.UntrustedData);
+
+// Pass the options explicitly for the greatest control.
+T object = MessagePackSerializer.Deserialize<T>(data, options);
+
+// Or set the security level as the default.
+MessagePackSerializer.DefaultOptions = options;
+```
+
+You should also avoid the Typeless serializer/formatters/resolvers for untrusted data as that opens the door for the untrusted data to potentially deserialize unanticipated types that can compromise security.
 
 ## Performance
 
@@ -626,7 +647,8 @@ MessagePackSerializer.Serialize(obj, lz4Options);
 
 `Lz4BlockArray` compresses an entire msgpack sequence as a array of lz4 block format. This is compressed/decompressed in chunks that do not consume LOH, but the compression ratio is slightly sacrificed.
 
-We're recommend to use `Lz4BlockArray` as default when use compression.
+We recommend to use `Lz4BlockArray` as default when use compression.
+For compatibility with MessagePack v1.x, use `Lz4Block`.
 
 Regardless of which Lz4 option is set at the deserialization, both data can be deserialized. For example, when the option is `Lz4BlockArray`, binary data of both `Lz4Block` and `Lz4BlockArray` can be deserialized. Neither can be expanded if the option is set to `None`.
 
@@ -949,13 +971,22 @@ public class FileInfoFormatter<T> : IMessagePackFormatter<FileInfo>
             return null;
         }
 
+        options.Security.DepthStep(ref reader);
+
         var path = reader.ReadString();
+
+        reader.Depth--;
         return new FileInfo(path);
     }
 }
 ```
 
-Your custom formatters must be discoverable via some `IFormatterResolver`. Learn more in our [resolvers](#resolvers).
+The `DepthStep` and `Depth--` statements provide a level of security while deserializing untrusted data
+that might otherwise be able to execute a denial of service attack by sending messagepack data that would
+deserialize into a very deep object graph leading to a `StackOverflowException` that would crash the process.
+This pair of statements should surround the bulk of any `IMessagePackFormatter<T>.Deserialize` method.
+
+Your custom formatters must be discoverable via some `IFormatterResolver`. Learn more in our [resolvers](#resolvers) section.
 
 You can see many other samples from [builtin formatters](https://github.com/neuecc/MessagePack-CSharp/tree/master/src/MessagePack/Formatters).
 
@@ -1299,7 +1330,7 @@ Because strict-AOT environments such as Xamarin and Unity IL2CPP forbid runtime 
 
 If you want to avoid the upfront dynamic generation cost or you need to run on Xamarin or Unity, you need AOT code generation. `mpc` (MessagePackCompiler) is the code generator of MessagePack for C#. mpc uses [Roslyn](https://github.com/dotnet/roslyn) to analyze source code.
 
-In the first, mpc requires [.NET Core 3 Runtime](https://dotnet.microsoft.com/download), the easiest way to acquire and run mpc is as a dotnet tool. 
+In the first, mpc requires [.NET Core 3 Runtime](https://dotnet.microsoft.com/download), the easiest way to acquire and run mpc is as a dotnet tool.
 
 ```
 dotnet tool install --global MessagePack.Generator
@@ -1323,14 +1354,16 @@ dotnet mpc -h
 Alternatively, you can download mpc from the [releases](https://github.com/neuecc/MessagePack-CSharp/releases/) page, that includes platform native binaries(don't require dotnet runtime).
 
 ```
-argument list:
--i, -input: Input path of analyze csproj or directory, if input multiple csproj split with ','.
--o, -output: Output file path(.cs) or directory(multiple generate file).
--c, -conditionalSymbol: [default=null]Conditional compiler symbols, split with ','.
--r, -resolverName: [default=GeneratedResolver]Set resolver name.
--n, -namespace: [default=MessagePack]Set namespace root name.
--m, -useMapMode: [default=False]Force use map mode serialization.
--ms, -multipleIfDirectiveOutputSymbols: [default=null]Generate #if-- files by symbols, split with ','.
+Usage: mpc [options...]
+
+Options:
+  -i, -input <String>                                Input path of analyze csproj or directory, if input multiple csproj split with ','. (Required)
+  -o, -output <String>                               Output file path(.cs) or directory(multiple generate file). (Required)
+  -c, -conditionalSymbol <String>                    Conditional compiler symbols, split with ','. (Default: null)
+  -r, -resolverName <String>                         Set resolver name. (Default: GeneratedResolver)
+  -n, -namespace <String>                            Set namespace root name. (Default: MessagePack)
+  -m, -useMapMode <Boolean>                          Force use map mode serialization. (Default: False)
+  -ms, -multipleIfDirectiveOutputSymbols <String>    Generate #if-- files by symbols, split with ','. (Default: null)
 ```
 
 `mpc` targets C# code that annotates with `[MessagePackObject]` or `[Union]`.
